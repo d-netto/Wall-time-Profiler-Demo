@@ -2,9 +2,9 @@
 
 ## Introduction & Problem Motivation 
 
-The profiler currently available in Julia v1.10 is a sampling CPU profiler. At a high level, the profiler periodically stops all Julia compute threads to collect their backtraces and estimates the time spent in each function based on the number of backtrace samples that include a frame from that function. However, note that only tasks running on a given system thread (e.g., pthread) just before the profiler stops them will have their backtraces collected.
+The profiler currently available in Julia v1.10 is a sampling CPU profiler. At a high level, the profiler periodically stops all Julia compute threads to collect their backtraces and estimates the time spent in each function based on the number of backtrace samples that include a frame from that function. However, note that only tasks currently running on system threads just before the profiler stops them will have their backtraces collected.
 
-While this profiler is typically well-suited for workloads where the majority of tasks are compute-bound, it is less suitable for systems where most tasks are IO-heavy or for diagnosing contention on synchronization primitives in your code.
+While this profiler is typically well-suited for workloads where the majority of tasks are compute-bound, it is less helpful for systems where most tasks are IO-heavy or for diagnosing contention on synchronization primitives in your code.
 
 Let's consider this simple workload:
 
@@ -46,17 +46,17 @@ end
 Profile.@profile main()
 ```
 
-Suppose our goal is to detect whether there is contention on the `ch` channel—i.e., whether the number of waiters is excessive given the rate at which work items are being produced in the channel.
+Our goal is to detect whether there is contention on the `ch` channel—i.e., whether the number of waiters is excessive given the rate at which work items are being produced in the channel.
 
-If we run this workload and collect a CPU profile, we obtain the following PProf flame graph:
+If we run this, we obtain the following [PProf](https://github.com/JuliaPerf/PProf.jl) flame graph:
 
 <img width="1496" alt="Screenshot 2024-10-24 at 16 44 13" src="https://github.com/user-attachments/assets/81a076e1-bbca-4baa-a0c8-d4893ff13a72">
 
-Note that the profiler provides no information to help infer where contention occurs in the system’s synchronization primitives. Waiters on a channel will be blocked and descheduled, meaning no system thread will be running the tasks assigned to those waiters, and as a result, they won't be sampled by the profiler.
+This profile provides no information to help determine where contention occurs in the system’s synchronization primitives. Waiters on a channel will be blocked and descheduled, meaning no system thread will be running the tasks assigned to those waiters, and as a result, they won't be sampled by the profiler.
 
 ## Wall-time Profiler
 
-Instead of sampling threads—and thus only sampling tasks that were scheduled right before their backtraces were collected—a wall-time task profiler samples tasks independently of their scheduling state. Specifically, tasks that are sleeping on a synchronization primitive at the time the profiler is running will be sampled with the same probability as tasks that were actively running when the profiler attempted to capture backtraces.
+Instead of sampling threads—and thus only sampling tasks that are running—a wall-time task profiler samples tasks independently of their scheduling state. For example, tasks that are sleeping on a synchronization primitive at the time the profiler is running will be sampled with the same probability as tasks that were actively running when the profiler attempted to capture backtraces.
 
 This approach allows us to construct a profile where backtraces from tasks blocked on the `ch` channel, as in the example above, are actually represented.
 
@@ -105,11 +105,11 @@ We obtain the following flame graph:
 
 <img width="1506" alt="Screenshot 2024-10-25 at 10 42 23" src="https://github.com/user-attachments/assets/fa0d4ecb-a61c-432b-86d2-ea6d1afecff1">
 
-Note that a large number of samples come from channel-related `take!` functions, which allows us to identify that there is indeed an excessive number of waiters in `ch`.
+We see that a large number of samples come from channel-related `take!` functions, which allows us to determine that there is indeed an excessive number of waiters in `ch`.
 
 ## A Compute-Bound Workload
 
-Despite the wall-time profile sampling all live tasks in the system—not just the currently running ones—it can still be well-suited for identifying performance hotspots, even if your code is compute-bound. Let’s consider a simple example:
+Despite the wall-time profiler sampling all live tasks in the system and not just the currently running ones, it can still be helpful for identifying performance hotspots, even if your code is compute-bound. Let’s consider a simple example:
 
 ```Julia
 using Base.Threads
@@ -211,4 +211,3 @@ After collecting a wall-time profile, we obtain the following flame graph:
 <img width="1508" alt="Screenshot 2024-10-25 at 11 10 17" src="https://github.com/user-attachments/assets/54c13909-20f6-4476-ae83-c4a401fda05a">
 
 The large number of samples from `failed_to_stop_thread_fun` confirms that we have a significant number of short-lived tasks in the system.
-
